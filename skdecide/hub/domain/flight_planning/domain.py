@@ -40,6 +40,7 @@ from skdecide.hub.domain.flight_planning.weather_interpolator.weather_tools.get_
 from skdecide.hub.domain.flight_planning.weather_interpolator.weather_tools.interpolator.GenericInterpolator import (
     GenericWindInterpolator,
 )
+from skdecide.hub.domain.flight_planning.weather_interpolator.weather_tools.get_ensemble_weather import get_wind_values
 from skdecide.hub.space.gym import EnumSpace, ListSpace, MultiDiscreteSpace
 from skdecide.utils import load_registered_solver
 
@@ -1295,7 +1296,7 @@ class FlightPlanningDomain(
         return self.network
 
     def flying(
-        self, from_: pd.DataFrame, to_: Tuple[float, float, int]
+        self, from_: pd.DataFrame, to_: Tuple[float, float, int], noisy=False
     ) -> pd.DataFrame:
         """Compute the trajectory of a flying object from a given point to a given point
 
@@ -1326,7 +1327,7 @@ class FlightPlanningDomain(
             # wind computations & A/C speed modification
             we, wn = 0, 0
             temp = 273.15
-            if self.weather_interpolator:
+            if self.weather_interpolator and not noisy:
                 time = pos["ts"] % (3_600 * 24)
 
                 # wind computations
@@ -1339,17 +1340,29 @@ class FlightPlanningDomain(
                 temp = self.weather_interpolator.interpol_field(
                     [pos["ts"], pos["alt"], pos["lat"], pos["lon"]], field="T"
                 )
+            elif noisy:
+                wspd, wd = get_wind_values(pos["lat"], pos["lon"], pos["alt"], noisy=noisy)
 
-            wspd = sqrt(wn * wn + we * we)
+                tas = mach2tas(self.mach, alt_to * ft)  # alt ft -> meters
 
-            tas = mach2tas(self.mach, alt_to * ft)  # alt ft -> meters
+                gs = compute_gspeed(
+                    tas=tas,
+                    true_course=radians(bearing_degrees),
+                    wind_speed=wspd,
+                    wind_direction=wd
+                )
 
-            gs = compute_gspeed(
-                tas=tas,
-                true_course=radians(bearing_degrees),
-                wind_speed=wspd,
-                wind_direction=3 * math.pi / 2 - atan2(wn, we),
-            )
+            else:
+                wspd = sqrt(wn * wn + we * we)
+
+                tas = mach2tas(self.mach, alt_to * ft)  # alt ft -> meters
+
+                gs = compute_gspeed(
+                    tas=tas,
+                    true_course=radians(bearing_degrees),
+                    wind_speed=wspd,
+                    wind_direction=3 * math.pi / 2 - atan2(wn, we),
+                )
 
             if gs * dt > dist:
                 # Last step. make sure we go to destination.

@@ -19,6 +19,10 @@ logger = logging.getLogger()
 
 
 def get_latest_gefs():
+    """
+    Get the today's GEFS data
+    :return: List of files
+    """
     current_date = str(datetime.now().date()).replace("-", "")
 
     exportdir = get_absolute_path(
@@ -42,6 +46,61 @@ def get_latest_gefs():
         else:
             logger.info("GEFS data already downloaded")
     return list_files
+
+
+def bilinear_interpolation(x, y, values):
+    """
+    Bilinear interpolation of a 2D grid of values
+    :param x: X coordinate
+    :param y: Y coordinate
+    :param values: 4 values of the grid
+    :return: Interpolated value
+    """
+    top_left, top_right, bottom_left, bottom_right = values
+    top = top_left * (1 - x) + top_right * x
+    bottom = bottom_left * (1 - x) + bottom_right * x
+    interpolated_value = top * (1 - y) + bottom * y
+    return interpolated_value
+
+
+def get_wind_values(lat: float, lon: float, alt=0, noisy=False, noise_amount=0.15) -> tuple:
+    """
+    Get the wind magnitude and direction at a given latitude, longitude and altitude
+    :param lat: Latitude
+    :param lon: Longitude
+    :param alt: Altitude
+    :param noisy: Add noise to the wind values
+    :param noise_amount: Amount of noise to add to the wind values
+    :return: Wind magnitude and direction
+    """
+    s_p = [(ceil(lat), ceil(lon)), (floor(lat), ceil(lon)),
+           (ceil(lat), floor(lon)), (floor(lat), floor(lon))]
+    ds_id_u = useful_vars["u"]
+    ds_id_v = useful_vars["v"]
+    alt_value = np.abs(ds[ds_id_u].isobaricInhPa.data - alt).argmin()
+
+    wind_dict = {"magnitude": [
+        sqrt(ds[ds_id_u]["u"][alt_value].data[s_p[x][0], s_p[x][1]] ** 2 +
+             ds[ds_id_v]["v"][alt_value].data[s_p[x][0], s_p[x][1]] ** 2) for x in range(4)
+    ],
+        "direction": [
+            atan2(ds[ds_id_v]["v"][alt_value].data[s_p[x][0], s_p[x][1]],
+                  ds[ds_id_u]["u"][alt_value].data[s_p[x][0], s_p[x][1]]) for x in range(4)
+        ]
+    }
+
+    magnitude = bilinear_interpolation(lat - floor(lat), lon - floor(lon), wind_dict["magnitude"])
+    direction = bilinear_interpolation(lat - floor(lat), lon - floor(lon), wind_dict["direction"])
+    if noisy:
+        avg_u_magnitude = np.mean(ds[ds_id_u]["u"][alt_value].data)
+        avg_v_magnitude = np.mean(ds[ds_id_v]["v"][alt_value].data)
+
+        avg_magnitude_noise = sqrt(avg_u_magnitude ** 2 + avg_v_magnitude ** 2) * noise_amount
+        avg_direction_noise = np.pi * noise_amount
+
+        magnitude += np.random.normal(0, avg_magnitude_noise)
+        direction += np.random.normal(0, avg_direction_noise)
+    return magnitude, direction
 
 
 if __name__ == "__main__":
@@ -96,46 +155,24 @@ if __name__ == "__main__":
         sp: Surface pressure (lat x lon)
         tp: Total precipitation (lat x lon)
     """
+
+    for u_v in useful_vars.keys():
+        for idx in range(len(ds)):
+            if u_v in ds[idx]:
+                useful_vars[u_v] = idx
+                break
+
     variable_to_check = "t"
     ds_id = useful_vars[variable_to_check]
-    print(f"Air Temperature at a pressure of {ds[ds_id].isobaricInhPa[5].data} hectoPascal, "
-          f"at Latitude {ds[ds_id].latitude[30].data}, longitude {ds[ds_id].longitude[30].data}: "
-          f"{ds[ds_id]['t'][5][30][30].data} Kelvin")
+    if variable_to_check in ds[ds_id]:
+        print(f"Air Temperature at a pressure of {ds[ds_id].isobaricInhPa[5].data} hectoPascal, "
+              f"at Latitude {ds[ds_id].latitude[30].data}, longitude {ds[ds_id].longitude[30].data}: "
+              f"{ds[ds_id]['t'][5][30][30].data} Kelvin")
+    else:
+        print(f"Variable {variable_to_check} not found in the dataset")
 
     LAT = 43.60914993286133
     LON = 1.3691602945327759
-    surrouding_points = [(ceil(LAT), ceil(LON)), (floor(LAT), ceil(LON)),
-                         (ceil(LAT), floor(LON)), (floor(LAT), floor(LON))]
-
-
-    def get_wind_values(matrix):
-        x, y = matrix[0]
-        latitude = np.where(ds[6].latitude.data == x)[0]
-        longitude = np.where(ds[6].longitude.data == y)[0]
-        return {"magnitude": [
-            sqrt(ds[6]["u"][5].data[latitude, longitude][0] ** 2 + ds[6]["v"][5].data[latitude, longitude][0] ** 2),
-            sqrt(ds[6]["u"][5].data[latitude - 1, longitude][0] ** 2 + ds[6]["v"][5].data[latitude - 1, longitude][0] ** 2),
-            sqrt(ds[6]["u"][5].data[latitude, longitude - 1][0] ** 2 + ds[6]["v"][5].data[latitude, longitude - 1][0] ** 2),
-            sqrt(ds[6]["u"][5].data[latitude - 1, longitude - 1][0] ** 2 + ds[6]["v"][5].data[latitude - 1, longitude - 1][0] ** 2)
-        ],
-            "direction": [
-                atan2(ds[6]["v"][5].data[latitude, longitude][0], ds[6]["u"][5].data[latitude, longitude][0]),
-                atan2(ds[6]["v"][5].data[latitude - 1, longitude][0], ds[6]["u"][5].data[latitude - 1, longitude][0]),
-                atan2(ds[6]["v"][5].data[latitude, longitude - 1][0], ds[6]["u"][5].data[latitude, longitude - 1][0]),
-                atan2(ds[6]["v"][5].data[latitude - 1, longitude - 1][0], ds[6]["u"][5].data[latitude - 1, longitude - 1][0])
-            ]
-        }
-
-
-    def bilinear_interpolation(x, y, values):
-        top_left, top_right, bottom_left, bottom_right = values
-        top = top_left * (1 - x) + top_right * x
-        bottom = bottom_left * (1 - x) + bottom_right * x
-        interpolated_value = top * (1 - y) + bottom * y
-        return interpolated_value
-
-    wind_dict = get_wind_values(surrouding_points)
-    magnitude = bilinear_interpolation(LAT - floor(LAT), LON - floor(LON), wind_dict["magnitude"])
-    direction = bilinear_interpolation(LAT - floor(LAT), LON - floor(LON), wind_dict["direction"])
-    print(f"Wind magnitude at {LAT}, {LON}: {magnitude} m/s, direction: {direction} rad")
-
+    ALT = 10
+    magnitude, direction = get_wind_values(LAT, LON, ALT, noisy=True)
+    print(f"Wind magnitude at LAT {LAT}, LON {LON}, ALT{ALT}: {magnitude} m/s, direction: {direction} rad")
