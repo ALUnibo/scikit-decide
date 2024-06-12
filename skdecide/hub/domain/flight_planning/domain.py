@@ -1,6 +1,7 @@
 import math
 from argparse import Action
 from enum import Enum
+from datetime import datetime as dtime
 
 # data and math
 from math import asin, atan2, cos, radians, sin, sqrt
@@ -234,7 +235,7 @@ class State:
 
 class H_Action(Enum):
     """
-    Horizontal action that can be perform by the aircraft
+    Horizontal action that can be performed by the aircraft
     """
 
     up = -1
@@ -244,7 +245,7 @@ class H_Action(Enum):
 
 class V_Action(Enum):
     """
-    Vertical action that can be perform by the aircraft
+    Vertical action that can be performed by the aircraft
     """
 
     climb = 1
@@ -591,6 +592,9 @@ class FlightPlanningDomain(
 
         self.res_img_dir = res_img_dir
         self.cruising = self.alt1 * ft >= self.ac["cruise"]["height"] * 0.98
+        self.wind_ds = None
+        self.n_calls = 0
+        self.avg_time = 0
 
     # Class functions
 
@@ -1307,6 +1311,7 @@ class FlightPlanningDomain(
         # Returns
             pd.DataFrame: the final trajectory of the object
         """
+
         pos = from_.to_dict("records")[0]
 
         lat_to, lon_to, alt_to = to_[0], to_[1], to_[2]
@@ -1340,8 +1345,23 @@ class FlightPlanningDomain(
                 temp = self.weather_interpolator.interpol_field(
                     [pos["ts"], pos["alt"], pos["lat"], pos["lon"]], field="T"
                 )
+                tas = mach2tas(self.mach, alt_to * ft)  # alt ft -> meters
+                wspd = sqrt(wn * wn + we * we)
+                gs = compute_gspeed(
+                    tas=tas,
+                    true_course=radians(bearing_degrees),
+                    wind_speed=wspd,
+                    wind_direction=3 * math.pi / 2 - atan2(wn, we)
+                )
+
             elif noisy:
-                wspd, wd = get_wind_values(pos["lat"], pos["lon"], pos["alt"], noisy=noisy)
+                tic = dtime.now()
+                if self.wind_ds is None:
+                    wspd, wd, self.wind_ds = get_wind_values(pos["lat"], pos["lon"], pos["alt"], noisy=noisy)
+                else:
+                    wspd, wd, _ = get_wind_values(pos["lat"], pos["lon"], pos["alt"], noisy=noisy, ds=self.wind_ds)
+                self.avg_time += (dtime.now() - tic).total_seconds()
+                self.n_calls += 1
 
                 tas = mach2tas(self.mach, alt_to * ft)  # alt ft -> meters
 
@@ -1394,15 +1414,16 @@ class FlightPlanningDomain(
             mass = pos["mass"] - pos["fuel"]
 
             # get new weather interpolators
-            if pos["ts"] + dt >= (3_600.0 * 24.0):
-                if self.weather_date:
-                    if self.weather_date == self.initial_date:
-                        self.weather_date = self.weather_date.next_day()
+            if not noisy:
+                if pos["ts"] + dt >= (3_600.0 * 24.0):
+                    if self.weather_date:
+                        if self.weather_date == self.initial_date:
+                            self.weather_date = self.weather_date.next_day()
+                            self.weather_interpolator = self.get_weather_interpolator()
+                else:
+                    if self.weather_date != self.initial_date:
+                        self.weather_date = self.weather_date.previous_day()
                         self.weather_interpolator = self.get_weather_interpolator()
-            else:
-                if self.weather_date != self.initial_date:
-                    self.weather_date = self.weather_date.previous_day()
-                    self.weather_interpolator = self.get_weather_interpolator()
 
             new_row = {
                 "ts": (pos["ts"] + dt),
@@ -1553,6 +1574,9 @@ class FlightPlanningDomain(
 
         return terminal_state_constraints, self.constraints
 
+    def debug_print(self):
+        print(f"Total number of calls: {self.n_calls}, average time per call: {self.avg_time / self.n_calls}")
+
 
 def compute_gspeed(
     tas: float, true_course: float, wind_speed: float, wind_direction: float
@@ -1691,3 +1715,4 @@ def simple_fuel_loop(solver_factory, domain_factory, max_steps: int = 100) -> fl
         fuel = domain._get_terminal_state_time_fuel(observation)["fuel"]
 
     return fuel
+
