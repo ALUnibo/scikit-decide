@@ -92,7 +92,7 @@ def get_weather_matrix(
     exportdir_grib = get_absolute_path(
         __file__,
         f"{get_data_home()}/weather/grib/"
-        + forecast
+        + str(forecast)
         + "/"
         + str(year)
         + str(month)
@@ -101,7 +101,7 @@ def get_weather_matrix(
     exportdir_npz = get_absolute_path(
         __file__,
         f"{get_data_home()}/weather/npz/"
-        + forecast
+        + str(forecast)
         + "/"
         + str(year)
         + str(month)

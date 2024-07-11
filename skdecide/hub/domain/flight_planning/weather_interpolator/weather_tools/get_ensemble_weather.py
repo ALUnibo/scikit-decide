@@ -5,6 +5,7 @@ import numpy as np
 import os
 import sys
 import logging
+import random
 import urllib.request as request
 
 import cfgrib
@@ -76,6 +77,7 @@ def get_wind_values(lat: float, lon: float, alt=0, noisy=False, noise_amount=0.1
     :param alt: Altitude
     :param noisy: Add noise to the wind values
     :param noise_amount: Amount of noise to add to the wind values
+    :param ds: GEFS Wind Dataset
     :return: Wind magnitude and direction
     """
 
@@ -84,7 +86,7 @@ def get_wind_values(lat: float, lon: float, alt=0, noisy=False, noise_amount=0.1
     if ds is None:
         test = get_latest_gefs()
         ds = cfgrib.open_datasets(test[0])
-    tic = datetime.now()
+
     useful_vars = {"tcc": 0, "pwat": 1, "soilw": 2, "u10": 3, "v10": 3, "r2": 4, "t": 5, "u": 6, "v": 6,
                    "w": 7, "gh": 8, "prmsl": 9, "ulwrf": 10, "cape": 11, "cin": 11,
                    "cicep": 12, "crain": 12, "csnow": 12, "dlwrf": 12, "dswrf": 12, "mslhf": 12, "msshf": 12,
@@ -123,9 +125,6 @@ def get_wind_values(lat: float, lon: float, alt=0, noisy=False, noise_amount=0.1
 
         magnitude += np.random.normal(0, avg_magnitude_noise)
         direction += np.random.normal(0, avg_direction_noise)
-
-    toc = datetime.now()
-    print(f"Time to add noise: {(toc - tic).total_seconds()}")
 
     return magnitude, direction, ds
 

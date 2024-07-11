@@ -1,7 +1,7 @@
 import math
+import datetime
 from argparse import Action
 from enum import Enum
-from datetime import datetime as dtime
 
 # data and math
 from math import asin, atan2, cos, radians, sin, sqrt
@@ -35,13 +35,13 @@ from skdecide.hub.domain.flight_planning.flightplanning_utils import (
     plot_full,
     plot_trajectory,
 )
+from skdecide.hub.domain.flight_planning.split_domain_utils import divide_graph
 from skdecide.hub.domain.flight_planning.weather_interpolator.weather_tools.get_weather_noaa import (
     get_weather_matrix,
 )
 from skdecide.hub.domain.flight_planning.weather_interpolator.weather_tools.interpolator.GenericInterpolator import (
     GenericWindInterpolator,
 )
-from skdecide.hub.domain.flight_planning.weather_interpolator.weather_tools.get_ensemble_weather import get_wind_values
 from skdecide.hub.space.gym import EnumSpace, ListSpace, MultiDiscreteSpace
 from skdecide.utils import load_registered_solver
 
@@ -235,7 +235,7 @@ class State:
 
 class H_Action(Enum):
     """
-    Horizontal action that can be performed by the aircraft
+    Horizontal action that can be perform by the aircraft
     """
 
     up = -1
@@ -245,7 +245,7 @@ class H_Action(Enum):
 
 class V_Action(Enum):
     """
-    Vertical action that can be performed by the aircraft
+    Vertical action that can be perform by the aircraft
     """
 
     climb = 1
@@ -376,27 +376,26 @@ class FlightPlanningDomain(
         origin: Union[str, tuple],
         destination: Union[str, tuple],
         actype: str,
-        weather_date: WeatherDate = None,
-        wind_interpolator: GenericWindInterpolator = None,
+        weather_date: Optional[WeatherDate] = None,
+        wind_interpolator: Optional[GenericWindInterpolator] = None,
         objective: str = "fuel",
         heuristic_name: str = "fuel",
         perf_model_name: str = "openap",
         constraints=None,
         nb_forward_points: int = 41,
         nb_lateral_points: int = 11,
-        nb_vertical_points: int = None,
-        take_off_weight: int = None,
-        fuel_loaded: float = None,
+        nb_vertical_points: Optional[int] = None,
+        take_off_weight: Optional[int] = None,
+        fuel_loaded: Optional[float] = None,
         fuel_loop: bool = False,
         fuel_loop_solver_cls: Optional[Type[Solver]] = None,
         fuel_loop_solver_kwargs: Optional[Dict[str, Any]] = None,
         fuel_loop_tol: float = 1e-3,
-        climbing_slope: float = None,
-        descending_slope: float = None,
-        graph_width: str = None,
-        res_img_dir: str = None,
+        climbing_slope: Optional[float] = None,
+        descending_slope: Optional[float] = None,
+        graph_width: Optional[str] = None,
+        res_img_dir: Optional[str] = None,
         starting_time: float = 3_600.0 * 8.0,
-        noisy=False
     ):
         """Initialisation of a flight planning instance
 
@@ -587,20 +586,21 @@ class FlightPlanningDomain(
             ),
             (0, self.nb_lateral_points // 2, 0),
         )
-        if noisy:
-            self.wind_history = pd.DataFrame([], columns=["magnitude", "direction"])
 
         self.perf_model = AircraftPerformanceModel(actype, perf_model_name)
         self.perf_model_name = perf_model_name
 
         self.res_img_dir = res_img_dir
         self.cruising = self.alt1 * ft >= self.ac["cruise"]["height"] * 0.98
-        self.noisy = noisy
-        self.wind_ds = None
-        self.n_calls = 0
-        self.avg_time = 0
 
     # Class functions
+
+    def RL_init(self):
+        """
+        Initialize the environment for Reinforcement Learning
+        """
+        self.network = divide_graph(self)
+        return self
 
     def _get_next_state(self, memory: D.T_state, action: D.T_event) -> D.T_state:
         """Compute the next state
@@ -1315,7 +1315,6 @@ class FlightPlanningDomain(
         # Returns
             pd.DataFrame: the final trajectory of the object
         """
-
         pos = from_.to_dict("records")[0]
 
         lat_to, lon_to, alt_to = to_[0], to_[1], to_[2]
@@ -1336,7 +1335,7 @@ class FlightPlanningDomain(
             # wind computations & A/C speed modification
             we, wn = 0, 0
             temp = 273.15
-            if self.weather_interpolator and not self.noisy:
+            if self.weather_interpolator:
                 time = pos["ts"] % (3_600 * 24)
 
                 # wind computations
@@ -1349,46 +1348,17 @@ class FlightPlanningDomain(
                 temp = self.weather_interpolator.interpol_field(
                     [pos["ts"], pos["alt"], pos["lat"], pos["lon"]], field="T"
                 )
-                tas = mach2tas(self.mach, alt_to * ft)  # alt ft -> meters
-                wspd = sqrt(wn * wn + we * we)
-                gs = compute_gspeed(
-                    tas=tas,
-                    true_course=radians(bearing_degrees),
-                    wind_speed=wspd,
-                    wind_direction=3 * math.pi / 2 - atan2(wn, we)
-                )
 
-            elif self.noisy:
-                tic = dtime.now()
-                if self.wind_ds is None:
-                    wspd, wd, self.wind_ds = get_wind_values(pos["lat"], pos["lon"], pos["alt"], noisy=self.noisy)
-                else:
-                    wspd, wd, _ = get_wind_values(pos["lat"], pos["lon"], pos["alt"], noisy=self.noisy, ds=self.wind_ds)
-                self.avg_time += (dtime.now() - tic).total_seconds()
-                self.n_calls += 1
+            wspd = sqrt(wn * wn + we * we)
 
-                tas = mach2tas(self.mach, alt_to * ft)  # alt ft -> meters
+            tas = mach2tas(self.mach, alt_to * ft)  # alt ft -> meters
 
-                gs = compute_gspeed(
-                    tas=tas,
-                    true_course=radians(bearing_degrees),
-                    wind_speed=wspd,
-                    wind_direction=wd
-                )
-
-                self.wind_history.append((wspd, wd))
-
-            else:
-                wspd = sqrt(wn * wn + we * we)
-
-                tas = mach2tas(self.mach, alt_to * ft)  # alt ft -> meters
-
-                gs = compute_gspeed(
-                    tas=tas,
-                    true_course=radians(bearing_degrees),
-                    wind_speed=wspd,
-                    wind_direction=3 * math.pi / 2 - atan2(wn, we),
-                )
+            gs = compute_gspeed(
+                tas=tas,
+                true_course=radians(bearing_degrees),
+                wind_speed=wspd,
+                wind_direction=3 * math.pi / 2 - atan2(wn, we),
+            )
 
             if gs * dt > dist:
                 # Last step. make sure we go to destination.
@@ -1420,16 +1390,15 @@ class FlightPlanningDomain(
             mass = pos["mass"] - pos["fuel"]
 
             # get new weather interpolators
-            if not self.noisy:
-                if pos["ts"] + dt >= (3_600.0 * 24.0):
-                    if self.weather_date:
-                        if self.weather_date == self.initial_date:
-                            self.weather_date = self.weather_date.next_day()
-                            self.weather_interpolator = self.get_weather_interpolator()
-                else:
-                    if self.weather_date != self.initial_date:
-                        self.weather_date = self.weather_date.previous_day()
+            if pos["ts"] + dt >= (3_600.0 * 24.0):
+                if self.weather_date:
+                    if self.weather_date == self.initial_date:
+                        self.weather_date = self.weather_date.next_day()
                         self.weather_interpolator = self.get_weather_interpolator()
+            else:
+                if self.weather_date != self.initial_date:
+                    self.weather_date = self.weather_date.previous_day()
+                    self.weather_interpolator = self.get_weather_interpolator()
 
             new_row = {
                 "ts": (pos["ts"] + dt),
@@ -1580,9 +1549,6 @@ class FlightPlanningDomain(
 
         return terminal_state_constraints, self.constraints
 
-    def debug_print(self):
-        print(f"Total number of calls: {self.n_calls}, average time per call: {self.avg_time / self.n_calls}")
-
 
 def compute_gspeed(
     tas: float, true_course: float, wind_speed: float, wind_direction: float
@@ -1724,37 +1690,31 @@ def simple_fuel_loop(solver_factory, domain_factory, max_steps: int = 100) -> fl
 
 
 if __name__ == "__main__":
-    import datetime
-    from skdecide.hub.solver.astar import Astar
+    for i in range(10):
+        print(f"Flight {i+1}")
+        origin = np.array([10, 10, 0])
+        destination = np.array([13, 13, 0])
+        aircraft_model = "A320"
+        heuristic = "fuel"
+        cost_function = "fuel"
 
-    origin = np.array([10, 10, 0])
-    destination = np.array([13, 13, 0])
-    aircraft_model = "A320"
-    heuristic = "fuel"
-    cost_function = "fuel"
+        today = datetime.date.today()
+        month = ((today.month) - 1) // 4 * 4 + 1  # will result in january, may, or september
+        year = today.year
+        day = 1
+        weather_date = WeatherDate(day=day, month=month, year=year)
 
-    today = datetime.date.today()
-    month = (today.month - 1) // 4 * 4 + 1  # will result in january, may, or september
-    year = today.year
-    day = 1
-    weather_date = WeatherDate(day=day, month=month, year=year)
+        env = FlightPlanningDomain(
+            origin,
+            destination,
+            aircraft_model,
+            weather_date=weather_date,
+            heuristic_name=heuristic,
+            perf_model_name="openap",  # a/c performance model
+            objective=cost_function,
+            fuel_loop=False,
+            graph_width="normal",
+        )
+        env.RL_init()
 
-    domain_factory = lambda: FlightPlanningDomain(
-        origin,
-        destination,
-        aircraft_model,
-        weather_date=weather_date,
-        heuristic_name=heuristic,
-        perf_model_name="openap",  # a/c performance model
-        objective=cost_function,
-        fuel_loop=False,
-        graph_width="normal",
-    )
-
-    domain = domain_factory()
-
-    with Astar(
-        heuristic=lambda d, s: d.heuristic(s), domain_factory=domain_factory, parallel=False
-    ) as solver:
-        solver.solve()
-        domain.custom_rollout(solver=solver)
+        net = env.get_network()  # List of lists containing LatLon objects
